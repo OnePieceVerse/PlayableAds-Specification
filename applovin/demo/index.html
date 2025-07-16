@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <!-- 关键！确保在移动设备上正确显示和缩放 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Flappy Bird 可玩广告示例</title>
+
+    <!-- Applovin 可玩广告要求必须引入 mraid.js -->
+    <!-- 在真实的广告环境中，这个脚本由广告 SDK 提供 -->
+    <!-- <script src="mraid.js"></script> -->
+
+    <style>
+        /* CSS 用于重置默认样式并设置全屏画布和覆盖层 */
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; /* 防止出现滚动条 */
+            background-color: #333; /* 背景色 */
+        }
+
+        /* 画布样式，使其填充整个屏幕 */
+        #gameCanvas {
+            display: block;
+            background-color: #70c5ce; /* 天蓝色背景 */
+            touch-action: none; /* 在移动设备上禁用默认的触摸行为，如滚动 */
+        }
+
+        /* 游戏结束时的覆盖层 */
+        #gameOverScreen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5); /* 半透明黑色背景 */
+
+            /* 使用 Flexbox 居中内容 */
+            display: none; /* 默认隐藏 */
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+
+            color: white;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            text-align: center;
+            /* 确保结束画面在按钮之下，避免遮挡 */
+            z-index: 5;
+        }
+
+        /* 游戏结束标题 */
+        #gameOverScreen h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px #000;
+        }
+
+        /* 分数显示 */
+        #gameOverScreen p {
+            font-size: 24px;
+            margin-bottom: 20px; /* 调整间距 */
+            text-shadow: 1px 1px 2px #000;
+        }
+
+        /* 用于持久化显示CTA按钮的容器 */
+        #ctaContainer {
+            position: absolute;
+            bottom: 40px; /* 与底部的距离 */
+            left: 40px;
+            width: 100%;
+            text-align: left;
+            z-index: 10; /* 确保按钮在最上层 */
+            display: none; /* 默认隐藏，由JS控制 */
+        }
+
+        /* CTA (Call to Action) 按钮通用样式 */
+        .ctaButton {
+            padding: 15px 40px;
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+            background: linear-gradient(180deg, #4CAF50 0%, #45a049 100%);
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            box-shadow: 0 5px #388E3C;
+            transition: all 0.1s ease-in-out;
+        }
+
+        .ctaButton:active {
+            transform: translateY(5px);
+            box-shadow: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- 游戏的主要画布 -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- 游戏结束画面 (现在包含一个居中的按钮) -->
+    <div id="gameOverScreen">
+        <h1>游戏结束</h1>
+        <p id="finalScore"></p>
+        <button id="gameOverCtaButton" class="ctaButton">立即下载</button>
+    </div>
+
+    <!-- 游戏进行中，显示在底部的按钮 -->
+    <div id="ctaContainer">
+        <button id="bottomCtaButton" class="ctaButton">立即下载</button>
+    </div>
+
+    <script>
+        // Applovin 指南要求所有 DOM 操作和游戏逻辑都在 MRAID 'ready' 事件触发后执行。
+        // 这是为了确保广告与 SDK 之间的通信已准备就绪。
+        // 因此，我们将所有逻辑封装在 initializePlayable 函数中。
+        function initializePlayable() {
+            // --- 1. 初始化和变量定义 ---
+
+            // 获取 DOM 元素
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            const gameOverScreen = document.getElementById('gameOverScreen');
+            const finalScoreElement = document.getElementById('finalScore');
+
+            // 获取两个按钮及其容器
+            const ctaContainer = document.getElementById('ctaContainer');
+            const bottomCtaButton = document.getElementById('bottomCtaButton');
+            const gameOverCtaButton = document.getElementById('gameOverCtaButton');
+
+            // 游戏状态管理
+            let gameState = 'start'; // 'start', 'playing', 'gameOver'
+
+            // 游戏变量
+            let bird, pipes, score, frameCount;
+
+            // 游戏常量
+            const GRAVITY = 0.4;
+            const FLAP_STRENGTH = -7;
+            const PIPE_WIDTH = 60;
+            const PIPE_GAP = 180; // 管道上下间距
+            const PIPE_SPEED = 3;
+            const PIPE_SPACING = 220; // 管道之间的水平间距
+
+            // --- 2. 游戏核心逻辑 ---
+
+            // 调整画布大小以适应窗口
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+            }
+
+            // 初始化或重置游戏
+            function resetGame() {
+                // 将小鸟放在屏幕左侧中间
+                bird = {
+                    x: 80,
+                    y: canvas.height / 2,
+                    width: 40,
+                    height: 30,
+                    velocity: 0
+                };
+
+                // 创建管道数组
+                pipes = [];
+                for (let i = 0; i < 3; i++) {
+                    addPipe(canvas.width + i * PIPE_SPACING);
+                }
+
+                score = 0;
+                frameCount = 0;
+                gameState = 'start'; // 重置后回到开始界面
+
+                // 控制UI显示
+                gameOverScreen.style.display = 'none'; // 隐藏结束画面
+                ctaContainer.style.display = 'block'; // 显示底部按钮
+            }
+
+            // 添加新的管道
+            function addPipe(xPosition) {
+                // 随机化管道缺口的位置
+                const gapY = Math.random() * (canvas.height - PIPE_GAP - 100) + 50;
+                pipes.push({
+                    x: xPosition,
+                    y: gapY,
+                    passed: false // 用于计分
+                });
+            }
+
+            // 游戏主循环
+            function gameLoop() {
+                update();
+                draw();
+                // 使用 requestAnimationFrame 实现流畅动画
+                requestAnimationFrame(gameLoop);
+            }
+
+            // 更新游戏状态（每帧调用）
+            function update() {
+                if (gameState !== 'playing') return;
+
+                // --- 小鸟逻辑 ---
+                bird.velocity += GRAVITY;
+                bird.y += bird.velocity;
+
+                // --- 管道逻辑 ---
+                frameCount++;
+                for (let i = pipes.length - 1; i >= 0; i--) {
+                    const p = pipes[i];
+                    p.x -= PIPE_SPEED;
+
+                    // 检查管道是否移出屏幕左侧
+                    if (p.x + PIPE_WIDTH < 0) {
+                        // 移除旧管道，并在右侧添加新管道
+                        pipes.splice(i, 1);
+                        addPipe(pipes[pipes.length - 1].x + PIPE_SPACING);
+                    }
+
+                    // --- 计分逻辑 ---
+                    if (!p.passed && p.x + PIPE_WIDTH < bird.x) {
+                        p.passed = true;
+                        score++;
+                    }
+
+                    // --- 碰撞检测 ---
+                    if (isColliding(bird, p)) {
+                        endGame();
+                    }
+                }
+
+                // --- 边界碰撞检测 ---
+                if (bird.y + bird.height > canvas.height || bird.y < 0) {
+                    endGame();
+                }
+            }
+
+            // 绘制游戏画面（每帧调用）
+            function draw() {
+                // 清空画布并绘制背景
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#70c5ce'; // 天蓝色
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // --- 绘制管道 ---
+                ctx.fillStyle = '#008000'; // 绿色
+                pipes.forEach(p => {
+                    // 上管道
+                    ctx.fillRect(p.x, 0, PIPE_WIDTH, p.y);
+                    // 下管道
+                    ctx.fillRect(p.x, p.y + PIPE_GAP, PIPE_WIDTH, canvas.height - p.y - PIPE_GAP);
+                });
+
+                // --- 绘制小鸟 ---
+                ctx.fillStyle = '#ffdb58'; // 黄色
+                ctx.fillRect(bird.x, bird.y, bird.width, bird.height);
+
+                // --- 绘制分数 ---
+                ctx.fillStyle = 'white';
+                ctx.font = '40px Arial';
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 2;
+                ctx.strokeText(score, canvas.width / 2, 50);
+                ctx.fillText(score, canvas.width / 2, 50);
+
+                // 如果是开始界面，显示提示信息
+                if (gameState === 'start') {
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                    ctx.font = '30px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('点击屏幕开始', canvas.width / 2, canvas.height / 2);
+                    ctx.textAlign = 'left'; // 重置对齐方式
+                }
+            }
+
+            // 碰撞检测函数
+            function isColliding(bird, pipe) {
+                // AABB (Axis-Aligned Bounding Box) 碰撞检测
+                if (bird.x < pipe.x + PIPE_WIDTH &&
+                    bird.x + bird.width > pipe.x &&
+                    (bird.y < pipe.y || bird.y + bird.height > pipe.y + PIPE_GAP)) {
+                    return true;
+                }
+                return false;
+            }
+
+            // 游戏结束处理
+            function endGame() {
+                if (gameState === 'gameOver') return; // 防止重复调用
+                gameState = 'gameOver';
+                finalScoreElement.textContent = `最终得分: ${score}`;
+
+                // 控制UI显示
+                gameOverScreen.style.display = 'flex'; // 显示结束画面
+                ctaContainer.style.display = 'none'; // 隐藏底部按钮
+            }
+
+            // --- 3. 事件处理 ---
+
+            // 处理用户输入（点击或触摸）
+            function handleInput(event) {
+                event.preventDefault(); // 防止默认行为，如页面缩放
+
+                switch (gameState) {
+                    case 'start':
+                        gameState = 'playing';
+                        // fall-through, 第一次点击也让小鸟飞一下
+                    case 'playing':
+                        bird.velocity = FLAP_STRENGTH;
+                        break;
+                    case 'gameOver':
+                        // 在游戏结束后，点击屏幕可以重新开始
+                        resetGame();
+                        gameState = 'playing';
+                        bird.velocity = FLAP_STRENGTH;
+                        break;
+                }
+            }
+
+            // CTA 按钮点击处理函数
+            function handleCtaClick() {
+                // 这是 Applovin Playable Ad 的核心部分
+                // 检查 mraid 对象是否存在并且处于 'default' 状态
+                if (typeof mraid !== 'undefined' && mraid.getState() === 'default') {
+                    // 使用 mraid.open() 来打开应用商店链接
+                    // 请将 'YOUR_APP_STORE_URL' 替换为您的真实链接
+                    const appStoreUrl = 'https://apps.apple.com/app/6450693428';
+                    mraid.open(appStoreUrl);
+                } else {
+                    // 作为备用方案，或者在非 MRAID 环境中测试时使用
+                    console.log("MRAID not available. Redirecting via window.open");
+                    // window.open('https://apps.apple.com/app/idYOUR_APP_ID');
+                }
+            }
+
+            // --- 4. 绑定事件并启动游戏 ---
+
+            // 监听窗口大小变化
+            window.addEventListener('resize', resizeCanvas, false);
+
+            // 监听用户输入事件
+            window.addEventListener('mousedown', handleInput);
+            window.addEventListener('touchstart', handleInput);
+
+            // 为两个CTA按钮分别绑定点击事件
+            function bindCtaEvents(button) {
+                button.addEventListener('mousedown', (e) => {
+                    e.stopPropagation(); // 阻止事件冒泡到 window，防止重置游戏
+                    handleCtaClick();
+                });
+                button.addEventListener('touchstart', (e) => {
+                    e.stopPropagation();
+                    handleCtaClick();
+                });
+            }
+            bindCtaEvents(bottomCtaButton);
+            bindCtaEvents(gameOverCtaButton);
+
+
+            // 初始化并开始游戏
+            resizeCanvas();
+            resetGame();
+            gameLoop();
+        }
+
+        // --- MRAID 合规启动逻辑 ---
+        // 检查 MRAID 状态，以确定何时初始化广告
+        if (typeof mraid !== 'undefined' && mraid.getState() === 'loading') {
+            // 如果 SDK 正在加载，则监听 ready 事件
+            console.log("MRAID is loading. Waiting for ready event.");
+            mraid.addEventListener('ready', initializePlayable);
+        } else if (typeof mraid !== 'undefined') {
+            // 如果已经 ready，直接运行
+            console.log("MRAID is already ready. Initializing.");
+            initializePlayable();
+        } else {
+            // 如果没有 MRAID 环境 (例如在桌面浏览器测试),
+            // 使用 DOMContentLoaded 作为备用方案
+            console.log("MRAID not found. Using DOMContentLoaded as fallback.");
+            document.addEventListener('DOMContentLoaded', initializePlayable);
+        }
+
+    </script>
+</body>
+</html>
